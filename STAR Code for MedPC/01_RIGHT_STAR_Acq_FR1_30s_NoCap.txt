@@ -1,0 +1,194 @@
+\ ******************************************************************************
+\ Program: FR1 Acquisition (30s Access, No Cap) - RIGHT Active
+\ Filename: 01_RIGHT_STAR_Acq_FR1_30s_NoCap.txt
+\ 
+\ Description: Fixed Ratio 1 schedule. One active lever press extends the
+\              sipper for 30 seconds. Levers retract during sipper access.
+\              Active lever = RIGHT; Inactive lever = LEFT
+\
+\ Hardware Setup:
+\   - Output 1: Left Lever (inactive)
+\   - Output 2: Right Lever (active)
+\   - Output 3: Sipper Extension/Retraction
+\   - Output 4: Fan (on throughout session)
+\   - Output 5: Sipper Cue Light (on when sipper extended)
+\   - Input 1: Left Lever Press (inactive)
+\   - Input 2: Right Lever Press (active)
+\   - Input 3: Lickometer Contact
+\
+\ Session Duration: 60 minutes
+\ ******************************************************************************
+
+\ ============================================================================
+\ OUTPUT DEFINITIONS
+\ ============================================================================
+^LeftLever = 1           \ Left Lever Extension (INACTIVE)
+^RightLever = 2          \ Right Lever Extension (ACTIVE)
+^Ret_Sipper = 3          \ Extension & Retraction of Sipper Pipette
+^Fan = 4                 \ Fan
+^Sipper_Light = 5        \ Sipper Cue Light
+
+\ ============================================================================
+\ INPUT DEFINITIONS
+\ ============================================================================
+^LNP = 1                 \ Left Lever Press (INACTIVE)
+^RNP = 2                 \ Right Lever Press (ACTIVE)
+^Lick = 3                \ Contact Lickometer Response
+
+\ ============================================================================
+\ VARIABLE DEFINITIONS
+\ ============================================================================
+\ Counters
+\A = Active FR Lever Counter (right lever presses when sipper retracted & levers extended)
+\B = Inactive FR Lever Counter (left lever presses when sipper retracted & levers extended)
+\C = Total Licks Counter (sum of all lick onsets)
+\D = Reinforcers Earned Counter (number of sipper extensions earned via FR1)
+\E = Lick Onset Counter (discrete lick events - beginning)
+\F = Lick Offset Counter (discrete lick events - ending)
+\G = (unused)
+\H = (unused)
+\I = (unused)
+
+\ Arrays for Timestamps (DIM = MED-PC IV syntax)
+DIM J = 5000             \ Active FR Lever Press Timestamp Array
+DIM K = 5000             \ Inactive FR Lever Press Timestamp Array
+DIM L = 5000             \ Reinforcer Earned Timestamp Array
+\M = (unused)
+DIM N = 5000             \ Lick Onset Timestamp Array
+DIM O = 5000             \ Lick Offset Timestamp Array
+\P = (unused)
+\Q = (unused)
+\R = (unused)
+\S = (unused)
+
+\ Session Management
+\T = Session Timer (increments by 0.01s, displayed in seconds)
+\U = (unused)
+\V = (unused)
+\W = (unused)
+\X = (unused)
+
+\ Internal Tracking
+\Y = Lickometer Tracker (accumulates rapid lick contacts to determine discrete lick events)
+\Z = (unused, Z-pulses used for signaling between state sets)
+
+\ ============================================================================
+\ STATE SET 1: LEVER CONTROL & REINFORCEMENT DELIVERY
+\ ============================================================================
+\ Manages lever extension/retraction and sipper delivery based on FR1 schedule
+\ ============================================================================
+S.S.1,
+
+\ ---------- State 1: Initialize Hardware ----------
+\ Ensure sipper is retracted before session starts
+S1,
+    0.01": OFF ^Ret_Sipper; ON ^Fan, ^Sipper_Light ---> S2
+
+\ ---------- State 2: Wait for Session Start ----------
+\ When session starts, extend both levers
+S2,
+    #START: ON ^LeftLever, ^RightLever ---> S3
+
+\ ---------- State 3: FR1 Schedule Active ----------
+\ Wait for active (right) lever press to deliver reinforcer
+\ Inactive (left) lever presses are recorded but have no consequence
+
+S3,
+    #R^RNP: ON ^Ret_Sipper;                   \ Extend sipper (reinforcer delivery)
+            OFF ^RightLever, ^LeftLever;      \ Retract both levers during access
+            SET J(A) = T,                     \ Store active press timestamp
+                L(D) = T;                     \ Store reinforcer timestamp
+            ADD A, D ---> S4                  \ Increment counters, move to timeout
+
+    #R^LNP: SET K(B) = T;                     \ Store inactive press timestamp
+            ADD B ---> SX                     \ Increment inactive counter, stay in state
+
+\ ---------- State 4: Reinforcer Access Period (30 seconds) ----------
+\ Sipper remains extended, levers remain retracted
+\ After 30s, sipper retracts and levers extend to restart FR1
+S4,
+    30": OFF ^Ret_Sipper;                     \ Retract sipper
+         ON ^LeftLever, ^RightLever ---> S3   \ Extend levers, return to FR1 schedule
+
+\ ============================================================================
+\ STATE SET 2: LICK DETECTION
+\ ============================================================================
+\ Detects discrete lick events using a debouncing algorithm
+\ ============================================================================
+S.S.2,
+
+\ ---------- State 1: Wait for Session Start ----------
+S1,
+    #START: ---> S2
+
+\ ---------- State 2: Monitor for Lick Onset ----------
+\ Continuously monitor lickometer for the beginning of a discrete lick
+\ Uses debouncing: requires 2 contacts within 0.02s to count as a lick onset
+S2,
+    #R^Lick: ADD Y;                           \ Increment lick contact counter
+             IF Y >= 2 [@Lick, @NoLick]       \ Check if threshold reached
+                 @Lick: Z1;                   \ Signal lick onset to State Set 3
+                        SET Y = 0 ---> S3     \ Reset counter, move to lick offset detection
+                 @NoLick: ---> SX             \ Stay in current state if threshold not met
+
+    0.02": SET Y = 0 ---> S2                  \ Reset debounce counter every 20ms
+
+\ ---------- State 3: Monitor for Lick Offset ----------
+\ Detect when the discrete lick ends (no contact for 20ms)
+S3,
+    0.02": Z2 ---> S2                         \ Signal lick offset, return to onset detection
+
+    #R^Lick: ---> S3                          \ Contact continues, stay in this state
+
+\ ============================================================================
+\ STATE SET 3: LICK ONSET RECORDING
+\ ============================================================================
+\ Records timestamp and increments counters when a discrete lick begins
+\ ============================================================================
+S.S.3,
+
+S1,
+    #Z1: SET N(E) = T;                        \ Store timestamp in array
+         ADD E, C ---> S1                     \ Increment onset counter and total licks
+
+\ ============================================================================
+\ STATE SET 4: LICK OFFSET RECORDING
+\ ============================================================================
+\ Records timestamp and increments counter when a discrete lick ends
+\ ============================================================================
+S.S.4,
+
+S1,
+    #Z2: SET O(F) = T;                        \ Store timestamp in array
+         ADD F ---> SX                        \ Increment offset counter
+
+\ ============================================================================
+\ STATE SET 5: SESSION TIMER & DISPLAY
+\ ============================================================================
+\ Updates session timer and refreshes on-screen display every 10ms
+\ ============================================================================
+S.S.5,
+
+S1,
+    #START ---> S2                            \ Wait for session start
+
+S2,
+    0.01": SET T = T + 0.01;                  \ Increment timer by 10ms
+           SHOW 1, Active FR, A,              \ Display active lever presses
+                2, Inactive FR, B,            \ Display inactive lever presses
+                3, Reinforcers, D,            \ Display number of reinforcers earned
+                4, Total Licks, C,            \ Display total lick count
+                5, Timer, T ---> SX           \ Display elapsed time
+
+\ ============================================================================
+\ STATE SET 6: SESSION DURATION CONTROL
+\ ============================================================================
+\ Terminates session after 60 minutes
+\ ============================================================================
+S.S.6,
+
+S1,
+    #START ---> S2                            \ Wait for session start
+
+S2,
+    60': ---> STOPABORTFLUSH                  \ End session after 60 minutes
